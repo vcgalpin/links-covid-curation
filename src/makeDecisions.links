@@ -1,0 +1,230 @@
+# 20210518: tidied up, documented work-arounds, separated out server functions as much as possible,
+#           acceptance and rejection counts added to weeks
+# 20220815: further code improvements
+
+# what's missing 
+#   some "embedded" decisions: taking hd of lists that are assumed to be non-empty, for example
+#   individual updates: there is no functionality to consider updates individually
+
+open import DatabaseTables;
+open import Utilities;
+
+open import Mvu;
+open import MvuHTML;
+open import MvuAttrs;
+
+import Template;
+
+typename Decision = (subcat: Int,
+                     weekdate: String,
+                     subcat_name: String,
+                     cat: String,
+                     old_value: Int,
+                     old_file: Int,
+                     new_value: Int,
+                     new_file: Int,
+                     time_uploaded: DateTime,
+                     resolution: String,
+                     res_value: Int);
+
+typename HTML(a) = MvuHTML.HTML(a);
+
+  typename Model = (resultsText: String, resultsFocus: Bool);
+
+  typename Message =
+    [|  AcceptAll:[Decision] | RejectAll:[Decision] | 
+        Continue | Cancel |];
+        #AcceptThis | RejectThis | PendThis | NewValue |
+        #AcceptThisAll | DeclineThisAll| PendThisAll |
+        #ConsiderInd |];
+
+#============= FUNS
+  
+  fun splitByDate (l) {
+    fun splitFind (l,m) {
+      switch (l) {
+        case [] -> [m]
+        case x::xs -> if (x.weekdate==hd(m).weekdate) { splitFind(xs,x::m) }
+                 else { m::splitFind(xs,[x]) }
+      }     
+    }
+  splitFind(tl(l),[hd(l)])
+  }
+
+  fun aggrDecsByWeek (d,ds,c) { # group decisions into lists by week to allow update of 
+                                # count columns in weeks table
+    switch (ds) {
+      case []    -> [(weekdate=d,count=c)]
+      case x::xs -> if (x.weekdate==d) { aggrDecsByWeek(d,xs,c+1) } 
+                        else     { (weekdate=d,count=c)::aggrDecsByWeek(x.weekdate,xs,1) }
+    }
+  }
+
+#============= DB FUNS
+
+  fun getFileWeek (id) server { # get the week of a particular file 
+    var lfw = query {(for (x <-- csv_file) where (x.file_id==id) [(last_weekdate=x.last_weekdate)])};
+    hd(lfw).last_weekdate
+  }
+
+
+  fun getPendingDecisions () server {
+    var d = query {
+      for (x <-- decision ) 
+        for (y <-- subcategory ) 
+          where (x.resolution == "pending" && x.subcat==y.subcat) 
+            orderby (y.cat)
+              [ (subcat_name=y.subcat_name, cat=y.cat, weekdate=x.weekdate, subcat=y.subcat, 
+                 old_value=x.old_value, new_value=x.new_value,
+                 time_uploaded = x.time_uploaded,old_file=x.old_file,
+                 new_file=x.new_file,resolution=x.resolution,
+                 res_value=x.res_value)]};
+    if (length(d)>0) {
+      for (x <- splitByDate(for (x<-d) orderby (x.weekdate) [x] )) 
+        [for (y <- x) orderby(y.subcat) [y]]
+    } else { [[]] }
+  }
+
+  fun writeUpdate (d) {
+    var when_uploaded = d.time_uploaded;
+    update sequenced (y <-v- covid_data)
+        between (when_uploaded, forever)
+        where (d.weekdate==y.weekdate && d.subcat==y.subcat)
+        set (count = d.new_value, file_id=d.new_file)
+  }
+
+  fun acceptPendingCorrections (model,decs,file_id) server { 
+    ignore(for (x <- decs)
+      [writeUpdate(x)]);
+    ignore(for (x <- decs)
+      [update (y <-- decision)
+        where (x.weekdate==y.weekdate && x.subcat==y.subcat && 
+               x.new_file==y.new_file && x.old_file==y.old_file)
+        set (time_resolved = now(), resolution="accepted", res_value=x.new_value)]);
+    ignore(for (x <- aggrDecsByWeek(hd(decs).weekdate,tl(decs),1))
+       [update (y <-t- week)
+         where (x.weekdate==y.weekdate)
+         set (accepted_updates=x.count, rejected_updates=0, 
+           file_id=file_id)]);
+    model
+  }
+  
+  fun declinePendingCorrections (model,decs,file_id) server { 
+    ignore(for (x <- decs )
+      [vt_insert sequenced covid_data values 
+        (weekdate,subcat,count,file_id,decision_time)
+	  [withValidity((weekdate=x.weekdate, subcat=x.subcat,
+            count=x.new_value,file_id=x.new_file,decision_time=now()),
+            beginningOfTime,beginningOfTime)]]);
+    ignore(for (x <- decs)
+      [update (y <-- decision)
+        where (x.weekdate==y.weekdate && x.subcat==y.subcat && 
+               x.new_file==y.new_file && x.old_file==y.old_file)
+        set (time_resolved = now(), resolution="rejected", res_value=x.old_value)]);
+    ignore(for (x <- aggrDecsByWeek(hd(decs).weekdate,tl(decs),1))
+       [update (y <-t- week)
+         where (x.weekdate==y.weekdate)
+         set (rejected_updates=x.count, accepted_updates=0,
+           file_id=file_id)]);
+    model
+  }
+
+#============= UPDT
+
+  sig updt : (Message, Model) ~> Model
+  fun updt(msg, model) {
+      switch(msg) {
+      case Cancel -> model
+      case Continue -> redirect("/dataOverview"); model 
+      case AcceptAll(d) -> (acceptPendingCorrections(model,d,hd(d).new_file) with resultsText = model.resultsText ^^ " " ^^ intToString(length(d)) ^^" updates have been made.") 
+      case RejectAll(d) -> (declinePendingCorrections(model,d,hd(d).old_file) with resultsText = model.resultsText ^^ " No updates have been made.")
+    }
+  }
+
+#============= VIEW
+
+  sig view : (Model) ~> MvuHTML.HTML(Message)
+  fun view(model) {
+
+    var decs = getPendingDecisions(); # list of lists grouped by date
+
+    fun renderModel(model) {
+      fun panel(name, contents) {
+        div(class("row mt-3"),
+          div(class("col-sm"),
+            div(class("card"),
+              div(class("card-header"), textNode(name)) +*
+              div(class("card-body"), contents))))
+      }
+      fun renderDecPanel (d) {
+        fun renderDecRow(x) {
+          tr(a0,
+            td(a0, textNode(x.cat)) +*
+            td(a0, textNode(x.subcat_name)) +*
+            td(a0, textNode(x.weekdate)) +*
+            td(a0, textNode(intToString(x.old_value))) +*
+            td(a0, textNode(intToString(x.new_value))) +*
+            td(a0, textNode(intToString(x.new_value-x.old_value))) +*
+            td(a0, textNode(show(x.time_uploaded)))
+          )
+        }
+        var rows = MvuHTML.concatMap(renderDecRow, d);
+        var decButtons = {
+           form(a0,
+               button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+                  onClick(fun() { AcceptAll(d) }) +@ id("cont1"), textNode("Accept all updates")) +*
+              button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+                  onClick(fun() { RejectAll(d) }) +@ id("cont2"), textNode("Reject all updates")) +* 
+              button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+                  # this has not been implemented, selecting this button goes back to overview screen
+                  onClick(fun() { Continue }) +@ id("cont3"), textNode("Consider each update individually")) +*
+              button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+                  onClick(fun() { Continue }) +@ id("cont4"), textNode("Continue")))
+        };
+	var decTable = {
+          h5(class("card-title"),h0) +*
+          table_(class("table table-bordered"),
+            thead(a0,
+              tr(a0,
+                th(style("width: 10%"), textNode("Category")) +*
+                th(a0, textNode("Subcategory")) +*
+                th(a0, textNode("Week")) +*
+                th(a0, textNode("Old value")) +*
+                th(a0, textNode("New value")) +*
+                th(a0, textNode("Change")) +*
+                th(a0, textNode("Time added"))
+               )) +*
+            tbody(a0, rows))
+        };
+        var fw = getFileWeek(hd(d).new_file);
+        panel("Updates for the week of "^^hd(d).weekdate^^" arising in the week of "^^fw, 
+              decTable +* decButtons)
+      }
+      var decPanels = MvuHTML.concatMap(renderDecPanel, decs);
+      div(class("container"),
+        h5(class("title"), textNode("Pending")) +* decPanels)
+    }
+    if (decs<>[[]]) {renderModel(model)}
+    else {
+       div(class("container"),
+        h6(class("title"), textNode("There are no pending decisions.")))
+    }
+  }
+
+#============= MAIN
+ 
+  fun mainPage() {
+    var initialModel = (resultsText = "", resultsFocus = false);   
+    runSimple("placeholder", initialModel, view, updt);
+    Template.template()
+  }
+
+  fun main() {
+    addRoute("/", fun(_) { mainPage() });
+    addStaticRoute("/css", "css", [("css", "text/css")]);
+    addStaticRoute("/js", "js", [("js", "text/javascript")]);
+    serveWebsockets();
+    servePages()
+}
+
+main()

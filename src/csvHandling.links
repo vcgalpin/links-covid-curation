@@ -1,0 +1,162 @@
+# functions for csv wrangling
+
+fun strToList(s,item){
+	switch(s) {
+		case [] -> []
+		case x::xs -> if (x<>',') {
+					strToList(xs,item^^implode([x]))
+				} else {
+					item::strToList(xs,"")
+				}
+	}
+}
+
+
+fun allContent(lstr){
+	switch (lstr) {
+		case [] -> ""
+		case x::xs -> x^^allContent(xs)
+	}
+}
+
+fun removeFrom(lstr,s) {
+	switch (lstr) {
+		case [] -> []
+		case x::xs -> if (hd(x)<>s) {
+				x::removeFrom(xs,s)
+			      } else {
+				[]
+			      }
+	}		
+}
+
+fun mergeFirstAndSecondColumns(lstr){
+	var first = selectElem(lstr,0);
+        var second = selectElem(lstr,1);
+	if (second=="") {
+		first::tl(tl(lstr))
+	} else { 
+		second::tl(tl(lstr))	
+		} 
+}
+
+fun isIntSeq (r) {
+	if (and(map(isInt,r))) {
+		map(stringToInt,r)==[1 .. length(r)]
+	} else {
+		false
+	}
+}
+
+fun convertMonth (l) {
+  switch (l) {
+    case "Jan" -> "01"
+    case "Feb" -> "02"
+    case "Mar" -> "03"
+    case "Apr" -> "04"
+    case "May" -> "05"
+    case "Jun" -> "06"
+    case "Jul" -> "07"
+    case "Aug" -> "08"
+    case "Sep" -> "09"
+    case "Oct" -> "10"
+    case "Nov" -> "11"
+    case "Dec" -> "12"
+    case other -> error("Unexpected date format: "^^l)
+  }
+}
+
+fun zeroPadDate(s) {
+  if (strlen(s)==8) {
+    '0' :: explode(s)
+  } else if (strlen(s)==9) {
+    explode(s)
+  } else {
+    print(s);error("Unexpected date format: "^^s)
+  }
+}
+
+# convert (d)d-Mon-yy to 20yy-mm-dd
+# todo: more checking
+fun convertDate (s) {
+  var l = zeroPadDate(s); # add additional '0' if necessary
+  implode('2' :: '0' :: drop(7,l)) # get year
+    ^^ "-" ^^ 
+    convertMonth(implode(take(3,drop(3,l)))) # get month
+    ^^ "-" ^^ 
+    implode(take(2,l)) # get day
+} 
+
+fun formatWeekRow (r) {
+	var mid = take(length(r)-3,tl(r));
+
+	if (hd(r)<>"Week number3") {
+		error("Raw data format error: Expecting 'Week number3' in (first column, first row)")
+	# check the middle elements are integers in sequence from 1
+	#} else if (not(isIntSeq(mid))) {
+	#	error("Raw data format error: Expecting consecutive integers starting from 1 in (second column, first row) to (second last column, first row)")
+	#} else if (selectElem(r,length(r)-2)<>"") {
+	#	error("Raw data format error: Expecting empty string in (second last column, first row)")
+	#} else if (last(r)<>"") {
+	#	error("Raw data format error: Expecting empty string in (last column, first row)")
+	} else {
+		"Week number" :: mid ++ ["0"]
+	}
+}
+
+fun formatDateRow (r) {
+	var mid = take(length(r)-3,tl(r));
+
+	if (hd(r)<>"Week beginning") {
+		error("Raw data format error: Expecting 'Week beginning' in (first column, first row)")
+	# check the middle elements are not empty
+	#} else if (or(map(fun(s){s==""},mid))) {
+	#	iter(print,mid);
+	#	error("Raw data format error: Expecting non-empty strings from 1 in (second column, last row) to (second last column, last row)")
+	#} else if (selectElem(r,length(r)-2)<>"Year to Date") {
+	#	error("Raw data format error: Expecting 'Year to Date' in (second last column, first row)")
+	#} else if (last(r)<>"") {
+	#	error("Raw data format error: Expecting empty string in (first column, last row)")
+	} else {
+		"Category" :: map(convertDate,mid) ++ ["Total"]
+	}
+}
+
+fun formatDataRow (r) {
+	var tr = take(length(r)-2,r) ++ drop(length(r)-1,r);
+
+	if (selectElem(r,length(r)-2)<>"") {
+		error("Raw data format error: Expecting empty string in the second last column of a data row")
+	} else if (not(and(map(isInt,tl(tr))))) {
+		iter(print,tr);
+		error("Raw data format error: Expecting integers (as strings) in a data row (after removal of empty second last item)"^^hd(tr))
+	} else {
+		tr
+	}
+}
+
+# needs better checking of categories
+fun addCatNum (l,i) {
+	switch (l) {
+		case [] -> []
+		case x::xs -> (intToString(i)::tl(x))::addCatNum(xs,i+1)
+	}
+}
+
+
+fun addWeeksToData (l,w) {
+	switch (l) {
+		case []  -> []
+		case x::xs -> zip(w,x)::addWeeksToData(xs,w)
+	}
+}
+
+fun dropLast(l){ # used for csv file format
+  take(length(l)-1,l)
+}
+  
+fun dropFirstLast(l) { # used for csv file format
+  tl(dropLast(l))
+}
+
+

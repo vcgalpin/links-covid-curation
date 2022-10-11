@@ -1,0 +1,426 @@
+# 202105??: tidied up, documented work-arounds, separated out server functions as much as possible,
+# 20210616: mostly finished, lookup for context is slow
+# 20210618: jump to top fixed, classification of mods added to multimod display
+# 20220815: further code improvement
+
+# what's missing
+#    fix for hardcoded initial values in pulldown menus in updt
+#    see comments inline, if any       
+
+
+open import DatabaseTables;
+open import Utilities;
+
+open import Mvu;
+open import MvuHTML;
+open import MvuAttrs;
+
+import Template;
+
+  typename FatalitySummary = (subcat:Int,
+                           weekdate:String,
+                           count:Int,
+                           file_id:Int,
+                           subcat_name:String,
+                           cat:String,
+                           mods:[(count:Int,decision_time:DateTime,file_id:Int,weekmod:String,
+                                  valid_from:DateTime,valid_to:DateTime)]);
+
+  typename Model = (results_text: String, results_focus: Bool, inContext: Bool, 
+                    summary: [FatalitySummary], details: [FatalitySummary],
+                    subcatDropdown:String, weekdateDropdown: String);
+
+  typename Message =
+    [|  MoreDetail:(String,String) | Continue | Cancel | Context | GetSubcat:String | GetWeek:String |
+        SeeHistory:(String,String) |];
+
+#============= FUNS
+  
+  fun classifyMods (l) {
+    fun classifyMod (m) {
+      if (m.valid_from==beginningOfTime && m.valid_from==m.valid_to) {
+        (acc=0,rej=1)
+      } else {
+        (acc=1,rej=0)
+      }
+    }
+    var b = fold_left (fun (x,y) {(acc=x.acc+y.acc,rej=x.rej+y.rej)}, 
+              (acc=0,rej=0), map(classifyMod,l));
+    if (b.acc==0 && b.rej==1) {
+      "(rejected)" 
+    } else if (b.acc==0 && b.rej>1) {
+      "(all rejected)" 
+    } else if (b.acc==1 && b.rej==0) {
+      "(accepted)"
+    } else if (b.acc>1 && b.rej==0) {
+      "(all accepted)"
+    } else {
+      "(accepted and rejected)"
+    } 
+      
+  }
+
+  fun sortMultiMods (mms) server {
+    for (x <- mms) orderby (x.weekdate,x.subcat) [x]
+  }
+
+#============= DB FUNS
+  
+  fun getFromSubcats () server { 
+    query {for (x <-- subcategory ) [x]}
+  }
+
+  fun getSubcatDetails (i) server {
+    query {for (x <-- subcategory ) where (x.subcat==stringToInt(i)) [x]}
+  }
+
+  fun getFromWeeks () server {
+    for (x <- ttCurrent(week)) 
+      where (not(x.all_zero)) 
+        orderby (x.weekdate)
+          [(weekdate=x.weekdate,file_id=x.file_id)]
+  }
+
+  fun getContext (d) server {
+    (weekmod=d.weekmod,
+     othermods= 
+      query {for (x <-v- covid_data) for (y <-- subcategory) for (z <-- csv_file)
+        where (vtData(x).file_id == d.file_id && z.file_id == vtData(x).file_id && 
+               vtData(x).subcat == y.subcat && z.last_weekdate<>vtData(x).weekdate)
+          orderby (vtData(x).weekdate,vtData(x).subcat)    
+            [(subcat=vtData(x).subcat,weekdate=vtData(x).weekdate,count=vtData(x).count,file_id=vtData(x).file_id,
+              decision_time=vtData(x).decision_time,weekmod=z.last_weekdate,
+              valid_from=vtFrom(x),valid_to=vtTo(x),subcat_name=y.subcat_name,cat=y.cat)]})
+  }
+
+  fun getFatalities () server {
+    query nested {for (x <- vtCurrent(covid_data)) for (z <-- subcategory) 
+      where (x.subcat==z.subcat)
+        [(subcat=x.subcat,weekdate=x.weekdate,file_id=x.file_id,
+          count=x.count,cat=z.cat,subcat_name=z.subcat_name, mods= 
+          for (y <-v- covid_data) for (w <-- csv_file)       
+            where (x.weekdate==vtData(y).weekdate && x.subcat==vtData(y).subcat &&
+                   vtData(y).file_id==w.file_id)
+              orderby (w.last_weekdate)
+                [(valid_from=vtFrom(y),valid_to=vtTo(y),decision_time=vtData(y).decision_time,
+                  file_id=vtData(y).file_id,count=vtData(y).count,weekmod=w.last_weekdate)]
+         )]}
+  }
+
+
+#============= UPDT
+
+  sig updt : (Message, Model) ~> Model
+  fun updt(msg, model) {
+    switch(msg) {
+      case Cancel -> model
+      case Continue -> (results_text = "", results_focus = false, inContext = false,
+                        subcatDropdown="1", weekdateDropdown="2020-03-16", summary = model.summary, details=[])
+                        # hard-coding of initial values should obviously be done differently!
+
+      case Context -> (model with inContext=true)
+      case GetSubcat(c) -> (model with subcatDropdown = c) 
+      case GetWeek(w) -> (model with weekdateDropdown = w) 
+      case MoreDetail(subcat,weekdate) -> (((model with results_text = "") 
+                                         with results_focus = true) 
+                                         with details = for (x <- model.summary) 
+                                           where (x.weekdate==model.weekdateDropdown && x.subcat==stringToInt(model.subcatDropdown)) [x])
+      case SeeHistory(subcat,weekdate) -> var m = ((((model with results_text = "") 
+                                                  with results_focus = true) 
+                                                  with weekdateDropdown = weekdate)
+                                                  with subcatDropdown = subcat);
+                                (m with details = for (x <- model.summary) 
+                                  where (x.weekdate==m.weekdateDropdown && x.subcat==stringToInt(m.subcatDropdown)) [x])
+
+    }
+  }
+
+#var catDetails = hd(getSubcatDetails(model.subcatDropdown));
+
+#============= VIEW
+
+  sig view : (Model) ~> MvuHTML.HTML(Message)
+  fun view(model) {
+
+    var enabledAttr =
+      if (not(model.results_focus)) {
+        MvuAttrs.empty
+      } else {
+        MvuAttrs.attr("disabled", "disabled")
+      };
+
+    fun renderModel(model) {
+
+      var ms = for (x <- model.summary) where (length(x.mods)>1) [x];
+      var multimods = sortMultiMods(ms); # need to do this on server for correct
+                                         # sorting by Ocaml, rather than JS      
+
+      fun panel(name, contents) {
+        div(class("row mt-3"),
+          div(class("col-sm"),
+            div(class("card"),
+              div(class("card-header"), textNode(name)) +*
+              div(class("card-body"), contents))))
+      }
+
+## ========== Context for data item/modification
+
+
+
+      fun renderContextPanels () {
+        fun renderContext (wc) {
+          fun renderContextTable (r) {
+            fun highlightText (x,s) {
+              if (x.weekdate==model.weekdateDropdown && x.subcat==stringToInt(model.subcatDropdown)) {
+                "<b>"^^s^^"</b>"
+              } else {
+                s
+              }
+            }
+            fun renderContextRow (x) {
+              tr(a0,
+              td(a0, unescapedTextNode(highlightText(x,x.weekdate))) +*
+              td(a0, unescapedTextNode(highlightText(x,x.cat))) +*
+              td(a0, unescapedTextNode(highlightText(x,x.subcat_name))) +* 
+              td(a0, textNode({if (x.valid_from==beginningOfTime && x.valid_from==x.valid_to) {"Rejected"} else {"Accepted"}})) +*
+              td(a0,
+                     button(type("button") +@ class("btn btn-primary") +@
+                       #onClick(fun() { Continue }), textNode("See history"))))
+                       onClick(fun() { SeeHistory(intToString(x.subcat),x.weekdate) }), textNode("See history"))))
+            }
+          var rows = MvuHTML.concatMap(renderContextRow, r);
+          #
+          h5(class("card-title"),h0) +*
+          table_(class("table table-bordered"),
+            thead(a0,
+              tr(a0,
+                th(style("width: 15%"), textNode("Week")) +*
+                th(a0, textNode("Category")) +*
+                th(a0, textNode("Subcategory")) +*
+                th(a0, textNode("Decision")) +*
+                th(style("width: 14%"), textNode(""))
+               )) +*
+            tbody(a0, rows))
+          }
+          panel("Potential modifications arising in the week of "^^wc.weekmod,
+              renderContextTable(wc.othermods))
+        }
+        # 
+        if (length(model.details)<>1) {
+          error("Error: zero or more than one item in result")
+        } else if (length(hd(model.details).mods)==1) {
+          panel("No modifications", 
+            textNode("There have been no modifications to the value for the subcategory '"
+                          ^^hd(getSubcatDetails(model.subcatDropdown)).subcat_name^^"' and the week of "^^model.weekdateDropdown^^".") +* 
+            br(a0,h0)) # +* 
+            #textNode(" The death count is "^^intToString(hd(model.details).count)^^"."))
+        } else {
+          var c = map(getContext,tl(hd(model.details).mods)); # exclude upload record, details ordered by weekdate and subcat
+          panel("Other data items with accepted/rejected modifications by week of modification",
+              MvuHTML.concatMap(renderContext,c))
+        }
+      }
+
+## ========== List of data items with at least one modification
+  
+      fun renderModPanel (d) {
+        fun renderModRow(x) {
+          tr(a0,
+            td(a0, textNode(x.weekdate)) +*
+            td(a0, textNode(x.cat)) +*
+            td(a0, textNode(x.subcat_name)) +*
+            td(a0, textNode(intToString(length(x.mods)-1)^^" "^^classifyMods(tl(x.mods)))) +*
+            td(a0, button(type("button") +@ class("btn btn-primary") +@
+                    onClick(fun() { SeeHistory(intToString(x.subcat),x.weekdate) }), textNode("See history")))
+          )
+        }
+	var rows = MvuHTML.concatMap(renderModRow, d);
+	var modTable = {
+          h5(class("card-title"),h0) +*
+          table_(class("table table-bordered"),
+            thead(a0,
+              tr(a0,
+                th(style("width: 14%"), textNode("Week")) +*
+                th(a0, textNode("Category")) +*
+                th(a0, textNode("Subcategory")) +*
+                th(a0, textNode("Number of updates seen")) +*
+                th(a0, h0)
+               )) +*
+            tbody(a0, rows))
+        };
+        panel("Data items with at least one accepted/rejected modification",modTable)
+      }
+
+## =========== Item form with dropdowns for displaying item and details (once requested)
+
+      var itemForm= {
+
+## =========== Setup of dropdown menus
+
+        var catDropdown = {      
+          fun renderDropdownItem(x) {
+            option(value(intToString(x.subcat)), textNode(x.cat^^": "^^x.subcat_name))
+          }
+	  var options = MvuHTML.concatMap(renderDropdownItem, getFromSubcats());
+	  select_(
+              id("catDropdown") +@
+              class("form-control") +@
+              onChange(fun(x) { GetSubcat(x) } ), options)
+        };
+        var weekDropdown = {
+          fun renderDropdownItem(x) {
+            option(value(x.weekdate), textNode(x.weekdate))
+          }          
+	  var options = MvuHTML.concatMap(renderDropdownItem, getFromWeeks());
+	  select_(
+              id("weekDropdown") +@
+              class("form-control") +@
+              onChange(fun(x) { GetWeek(x) } ), options)
+        };
+
+## ============ Select button for item specified by dropdowns
+
+        var itemSelect = {
+          form(a0,
+            div(class("form-group"),
+              label(for_("catDropdown"), textNode("Select subcategory")) +*
+              catDropdown) +*
+            div(class("form-group"),
+              label(for_("weekDropdown"), textNode("Select week")) +*
+              weekDropdown) +*
+            div(class("form-group"),
+              button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+                  enabledAttr +@
+                  onClick(fun() { MoreDetail(model.subcatDropdown,model.weekdateDropdown) }), textNode("Lookup"))))
+         };
+
+## =========== Detail table (only displayed after lookup selected)
+
+        # not currently used, calculated change between updates incorrectly,
+        # it may be better to store the change in the covid_Fatalities table
+        fun processDetailsAndCalcChange(details,c) {
+          fun newMods (d,c) {
+            (decision_time=if (d.valid_from==beginningOfTime) {d.decision_time} else {d.valid_from},
+             weekmod=d.weekmod,
+             count=d.count,
+             change=if (c==0) { "-" } else { intToString(d.count-c) },
+             dec=if (c==0) { "New value" } else if (d.valid_from==d.valid_to && d.valid_from==beginningOfTime) 
+                                                 {"Reject"} else { "Accept" })
+          }
+          switch (details) {
+            case []   -> []
+            case x::xs -> newMods(x,c)::processDetailsAndCalcChange(xs,x.count)
+          } 
+        }
+
+        fun processNewDetails (d) {
+          (weekmod=d.weekmod, count=d.count, change=0,
+             decision_time=d.valid_from,dec="New data item stored")
+        }
+
+        fun processModDetails (d) {
+          (weekmod=d.weekmod, count=d.count, change=0,
+             decision_time=if (d.valid_from==beginningOfTime) {d.decision_time} else {d.valid_from},
+             dec=if (d.valid_from==d.valid_to && d.valid_from==beginningOfTime) {"Modification rejected"} else { "Modification accepted" })
+        }
+
+        fun renderDetailsTable(details) {
+          fun renderDetailsRow(x) {
+            tr(a0,
+              td(a0, textNode(show(x.decision_time))) +*
+              td(a0, textNode(intToString(x.count))) +*
+              td(a0, textNode(x.dec)) +*
+              #td(a0, textNode(x.change)) +*
+              td(a0, textNode(x.weekmod))
+            )
+          }        
+	  var rows = MvuHTML.concatMap(renderDetailsRow, details);	
+          { 
+            h5(class("card-title"),h0) +*
+              table_(class("table table-bordered"),
+                thead(a0,
+                  tr(a0,       
+                    th(a0,textNode("Date")) +*           
+                    th(a0,textNode("Value")) +*
+                    th(a0,textNode("Decision")) +* 
+                    #th(a0,textNode("Change")) +*
+                    th(a0,textNode("Week of modification"))
+                  )) +*
+               tbody(a0, rows))
+          }
+        }
+
+        var itemDetails = if (model.results_focus) {
+          if (length(model.details)>1) {
+            error("Error: two items match selection criteria")
+          } else if (length(model.details)==1) {
+            var d = hd(model.details);
+            var detailsTable = renderDetailsTable(processNewDetails(hd(d.mods))::map(processModDetails,tl(d.mods)));
+            var s1 = "The current value for subcategory <b>"^^d.subcat_name^^
+                       "</b> and week <b>"^^d.weekdate^^"</b> is <b>"^^intToString(d.count)^^"</b>.<br />
+                       This data item has the following history.";
+            form(a0,
+              div(class("form-group"),
+                label(for_("cont"), unescapedTextNode(s1) +* detailsTable +*
+                button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+                  onClick(fun() { Context }) +@ id("context"), 
+                    textNode("See modifications in context")) +*
+                button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+                  onClick(fun() { Continue }) +@ id("cont"), textNode("Continue")))))
+          } else {
+            var s = "There is no data item for subcategory <b>"^^hd(getSubcatDetails(model.subcatDropdown)).subcat_name^^
+                      "</b> and week <b>"^^model.weekdateDropdown^^"</b>.<br /><br />";
+            form(a0,
+              div(class("form-group"),
+                label(for_("cont"), unescapedTextNode(s) +*
+                button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+                  onClick(fun() { Continue }) +@ id("cont"), textNode("Continue")))))
+               }
+        } else {h0};
+        if (model.results_focus) {
+          panel("Data item update history",itemDetails)
+        } else {
+          panel("Data item update history",itemSelect +* itemDetails)
+        }
+      };
+
+## ========== Selection of panels to display
+
+      if (model.inContext) {
+        var contextPanels = renderContextPanels();
+        div(class("container"),
+          h5(class("title"), textNode("Provenance: individual data items")) +* itemForm +* contextPanels)
+      } else {
+        var modPanel = renderModPanel(multimods);
+        div(class("container"),
+          h5(class("title"), textNode("Provenance: individual data items")) +* itemForm +* modPanel)
+      }
+    }
+    var topLink = a(name("top"), h0); # sufficient to create anchor, no need to put topLink
+                                      # elsewhere in code
+    redirect("#top");
+    renderModel(model)
+  }
+
+#============= MAIN
+ 
+  var week_info = getFromWeeks();
+  var init_weekdateDropdown = if (length(week_info)<>0) hd(week_info).weekdate else "None";
+  var init_subcatDropdown = intToString(hd(getFromSubcats()).subcat);
+  
+  fun mainPage() {
+    var initialModel = (results_text = "", results_focus = false, inContext = false,
+                        subcatDropdown=init_subcatDropdown, weekdateDropdown=init_weekdateDropdown, summary = getFatalities(), details=[]);   
+    runSimple("placeholder", initialModel, view, updt);
+    Template.template()
+  }
+
+  fun main() {
+    addRoute("/", fun(_) { mainPage() });
+    addStaticRoute("/css", "css", [("css", "text/css")]);
+    addStaticRoute("/js", "js", [("js", "text/javascript")]);
+    serveWebsockets();
+    servePages()
+}
+
+main()

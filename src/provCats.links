@@ -1,0 +1,235 @@
+# 202106??: first attempt, expected to be slow
+# 20220815: further code improvement
+
+# what's missing
+#    see comments inline, if any 
+#    See History functionality not implemented
+
+open import DatabaseTables;
+open import Utilities;
+
+open import Mvu;
+open import MvuHTML;
+open import MvuAttrs;
+
+import Template;
+
+  typename SubcatSummary = (subcat_name:String,cat:String,subcat:Int,
+                            mods:[(weekdate:String,count:Int,weekmod:String,
+                                   decision_time:DateTime,file_id:Int,
+                                   valid_from:DateTime,valid_to:DateTime)]);
+
+  typename CatSummary = (cat_name:String,cat:String,
+                         showCatDetails: Bool,
+                         subcats:[SubcatSummary]);
+
+  typename Model = (resultsText: String, showDetails: Bool, summary:[CatSummary], 
+                    detailCat: String);
+
+  typename Message = [| Cancel | Continue | SeeDetails: String | HideDetails: String |
+                        SeeHistory: (String,String) |];
+
+#============= FUNS
+  
+  fun countMods (l) {
+    fun countMod (m) {
+      if (m.valid_from==beginningOfTime && m.valid_from==m.valid_to) {
+        (acc=0,rej=1)
+      } else {
+        (acc=1,rej=0)
+      }
+    }
+  fold_left (fun (x,y) {(acc=x.acc+y.acc,rej=x.rej+y.rej)}, 
+         (acc=0,rej=0), map(countMod,l))
+  }
+
+  fun flattenMods (sc) {
+    for (x <- sc) for (y <- x.mods)
+     [(subcat = x.subcat | (subcat_name=x.subcat_name | y))]
+  }
+
+#============= DB FUNS
+
+fun getCatsWithSubcats () server {
+    # for each subcategory, create a list of mods
+    var cd = query nested {for (x <-- subcategory) 
+        [(subcat=x.subcat,cat=x.cat,subcat_name=x.subcat_name,mods= 
+          for (y <-v- covid_data) for (w <-- csv_file)       
+            where (x.subcat==vtData(y).subcat && vtData(y).file_id==w.file_id
+                                              && vtTo(y)<>forever)
+              orderby (vtData(y).weekdate)
+                [(valid_from=vtFrom(y),valid_to=vtTo(y),decision_time=vtData(y).decision_time,
+                  file_id=vtData(y).file_id,count=vtData(y).count,weekmod=w.last_weekdate,
+                  weekdate=vtData(y).weekdate)]
+         )]}; 
+
+     # for each category, create a list of subcategories
+     var cg = query {for (x <-- category) [x]}; # error if category used directly!
+                                                # related to mods list
+     for (x <- cg)                      
+       [(showCatDetails=false |
+        (subcats=for (y <- cd) where (x.cat==y.cat) [y] | x))]
+  }
+ 
+#============= UPDT
+
+  sig updt : (Message, Model) ~> Model
+  fun updt(msg, model) {
+    fun updateShow(c,s) {
+      if (s.cat <> c) { # the week chosen for show or hide isn't this week
+        s
+      } else {
+        (s with showCatDetails=not(s.showCatDetails))
+      }
+    }
+    switch(msg) {
+      case Cancel -> model
+      case Continue -> model
+      case SeeDetails(c) -> (model with summary=map(curry(updateShow)(c),model.summary))
+      case HideDetails(c) -> (model with summary=map(curry(updateShow)(c),model.summary))
+      case SeeHistory(a,b) -> model
+   }
+  }
+
+#============= VIEW
+
+  sig view : (Model) ~> MvuHTML.HTML(Message)
+  fun view(model) {
+
+    fun enabledAttr (b) {
+      if (b) {
+        a0
+      } else {
+        attr("disabled", "disabled")
+      }
+    }
+
+    fun renderModel(model) {
+
+      fun panel(name, contents) {
+        div(class("row mt-3"),
+          div(class("col-sm"),
+            div(class("card"),
+              div(class("card-header"), textNode(name)) +*
+              div(class("card-body"), contents))))
+      }
+
+## ========== Context for data item/modification
+
+      fun renderCatPanels () {
+        fun renderCat (c) {
+         fun renderDetailsTable (r) {
+           fun renderDetailRow (x) {
+              tr(a0,
+              td(a0, textNode(x.subcat_name)) +*
+              td(a0, textNode(x.weekdate)) +*  
+              td(a0, textNode({if (x.valid_from==beginningOfTime && x.valid_from==x.valid_to) 
+                      {"Rejected"} else {"Accepted"}})) +*
+              td(a0, textNode(x.weekmod)) +*  
+              td(a0,
+                     button(type("button") +@ class("btn btn-primary") +@
+                       #onClick(fun() { Continue }), textNode("See history"))))
+                       onClick(fun() { SeeHistory(intToString(1),x.weekdate) }), 
+                                       textNode("See history"))))
+            }
+            var rows = MvuHTML.concatMap(renderDetailRow, r);
+            #
+            h5(class("card-title"),h0) +*
+            table_(class("table table-bordered"),
+              thead(a0,
+                tr(a0,
+                  th(a0, textNode("Subcategory")) +*
+                  th(a0, textNode("Week")) +*
+                  th(a0, textNode("Decision")) +*
+                  th(a0, textNode("Week of modification")) +*
+                    th(style("width: 14%"), textNode(""))
+                 )) +*
+              tbody(a0, rows))
+           }
+
+          var renderDetailsPanel = if (c.showCatDetails) {
+             div(a0, button(type("button") +@ class("btn btn-primary") +@
+               onClick(fun() { HideDetails(c.cat) }), textNode("Hide details"))) +*     
+             div(a0,renderDetailsTable(flattenMods(c.subcats)))
+               } else {
+             div(a0, button(type("button") +@ class("btn btn-primary") +@
+               onClick(fun() { SeeDetails(c.cat) }), textNode("See details")))
+          };
+
+          fun renderSubcatTable (r) {
+            fun renderSubcatRow (x) {
+              
+              tr(a0,
+                td(a0, textNode(x.subcat_name)) +*
+         # don't need to subtract one from accepted updates to account for initial upload
+                td(a0, textNode(intToString(x.counts.acc))) +*
+                td(a0, textNode(intToString(x.counts.rej))) +*
+                td(a0, h0)
+              )
+            }
+            var rows = MvuHTML.concatMap(renderSubcatRow, r);
+            #
+            h5(class("card-title"),h0) +*
+            table_(class("table table-bordered"),
+              thead(a0,
+                tr(a0,
+                  th(a0, textNode("Subcategory")) +*
+                  th(a0, textNode("Accepted updates")) +*
+                  th(a0, textNode("Rejected updates")) +*
+                  th(style("width: 16%"), textNode(""))
+                 )) +*
+              tbody(a0, rows))
+          }
+          var mod_counts = for (x <- c.subcats)
+            [(subcat_name=x.subcat_name,counts=countMods((x.mods)))];
+
+          var acc = fold_left(fun(x,y){x+y.counts.acc},0,mod_counts);
+          var rej = fold_left(fun(x,y){x+y.counts.rej},0,mod_counts);
+
+          if (acc+rej==0) {
+            var display_str = "For this category, there have been <b>"
+              ^^intToString(acc)^^
+              "</b> accepted updates and <b>"
+              ^^intToString(rej)^^
+              "</b> rejected updates.<br /> ";
+            panel(c.cat_name,
+              unescapedTextNode(display_str))
+          } else {  
+            var display_str = "For this category, there have been <b>"
+              ^^intToString(acc)^^
+              "</b> accepted updates and <b>"
+              ^^intToString(rej)^^
+              "</b> rejected updates. This category has the following update history.<br /> ";
+            panel(c.cat_name,
+              unescapedTextNode(display_str) +* renderSubcatTable(mod_counts) +* renderDetailsPanel)
+          }
+        }
+         
+        panel("Details of data modifications by category",
+              MvuHTML.concatMap(renderCat,model.summary))
+      }
+      var catPanels = renderCatPanels();
+      div(class("container"),
+        h5(class("title"), textNode("Provenance: categories")) +* catPanels)
+    }
+    renderModel(model)
+  }
+
+#============= MAIN
+  
+  fun mainPage() {
+    var initialModel = (resultsText = "", showDetails = false, detailCat="",
+                        summary = getCatsWithSubcats());   
+    runSimple("placeholder", initialModel, view, updt);
+    Template.template()
+  }
+
+  fun main() {
+    addRoute("/", fun(_) { mainPage() });
+    addStaticRoute("/css", "css", [("css", "text/css")]);
+    addStaticRoute("/js", "js", [("js", "text/javascript")]);
+    serveWebsockets();
+    servePages()
+  }
+
+main()

@@ -1,0 +1,40 @@
+# 20220817 initial version
+
+import Template;
+
+open import Mvu;
+open import MvuHTML;
+open import MvuAttrs;		
+
+fun src(s) { attr("src", s) }
+
+fun mainPage () {
+  fun panel(name, contents) {
+    div(class("row mt-3"),
+      div(class("col-sm"),
+        div(class("card"),
+          h6(class("card-header"), textNode(name)) +*
+            div(class("card-body"), contents))))
+  }
+
+  Mvu.runStatic("placeholder", (), fun (_) {
+      
+      panel("Case study: Scottish Covid-19 figures",      
+        div(a0,img(src("images/sstotdb.jpg")+@style("width:1200px;"), h0))) +*
+      panel("Temporal database update",
+        div(a0,img(src("images/tdb.jpg")+@style("width:1200px;"), h0))) +*
+      panel("Original data",
+        div(a0,img(src("images/csv.png")+@style("width:1300px;"), h0))) +*
+      panel("Database schema",
+        div(a0,img(src("images/schema.png")+@style("width:1200px;"), h0))) +*      
+      panel("Flat temporal query",
+        div(a0,img(src("images/flat.png")+@style("width:1200px;"), h0))) +*
+      panel("Nested temporal query",
+        div(a0,img(src("images/nested.png")+@style("width:1200px;"), h0))) +*
+      panel("Insertion, deletion and update",
+        div(a0,img(src("images/insert.png")+@style("width:1200px;"), h0))) +*
+      panel("Model-view-update (MVU)",
+        div(a0,img(src("images/mvu.png")+@style("width:1200px;"), h0)))
+  });
+  Template.template()
+}

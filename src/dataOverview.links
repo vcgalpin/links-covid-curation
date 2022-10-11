@@ -1,0 +1,146 @@
+# 20210511: tidied up, documented work-arounds, separated out server functions as much as possible,
+#           could be improved with more information that should be in tables such as week (to avoid
+#           scanning covid_data table for summary info) 
+# 20210621: used unescapedTextNode to allow for line breaks in status string
+# 20220815: further code improvements
+
+# originally this page was going to be more complex and hence has some irrelevant code related to that
+
+open import DatabaseTables;
+open import Utilities;
+
+open import Mvu;
+open import MvuHTML;
+open import MvuAttrs;
+
+import Template;
+
+  typename CSVFiles = (file_id: Int,
+                       file_name: String, 
+                       first_weekdate: String,
+                       last_weekdate: String,
+                       upload_time: DateTime); 
+
+  typename Model = (uploadFiles: [CSVFiles]);
+
+  typename Message = [| ShowDataOverview |]; 
+  # not used at all, overview is simpler than initially envisioned
+
+#============= FUNS
+                                                                 
+  fun extantWeeks () { 
+    var ew = for (x <- ttCurrent(week)) where (not(x.all_zero)) orderby (x.weekdate) [(weekdate=x.weekdate)];
+    "The earliest week with (non-zero) data is "^^hd(ew).weekdate^^".<br />The latest week with data is " ^^last(ew).weekdate^^ ".<br />"
+  }
+
+  fun dataInfo () server { 
+    var l = length(vtCurrent(covid_data));
+    if (l==0) {
+      "No data uploaded yet."        
+    } else {
+      intToString(l) ^^ " data items have been uploaded.<br />"^^extantWeeks()
+    }
+  } 
+
+#============= VIEW
+
+  sig view : (Model) ~> HTML(Message)
+  fun view(model) client {
+
+    fun renderModel(model) {
+      var data = model.uploadFiles;
+
+      fun panel(name, contents) {
+        div(class("row mt-3"),
+          div(class("col-sm"),
+            div(class("card"),
+              div(class("card-header"), textNode(name)) +*
+              div(class("card-body"), contents))))
+      }
+
+      var dataInfoPanel = {
+        fun renderDataRow(x) {
+          tr(a0,
+            td(a0, textNode(x.fatality_type)) +*
+            td(a0, unescapedTextNode(x.status)) 
+          )
+        }
+
+        # original plan was to include other types of fatalities, hence the need for multiple rows
+	var dataAvail = [ (fatality_type="COVID-19",status=dataInfo()) ];
+              
+	var rows = MvuHTML.concatMap(renderDataRow, dataAvail);
+	
+	var dataTable = {
+          #h5(class("card-title"), textNode("Data Available")) +*
+          h5(class("card-title"),h0) +*
+          table_(class("table table-bordered"),
+            thead(a0,
+              tr(a0,
+                th(a0, textNode("Fatality type")) +*
+                th(a0, textNode("Status"))
+               )) +*
+            tbody(a0, rows))
+        };
+        panel("Data available",dataTable)
+      };
+
+      var fileInfoPanel = {
+        fun renderFileRow(x) {
+          tr(a0,
+            td(a0, textNode(x.file_name)) +*
+            td(a0, textNode(x.first_weekdate)) +*
+            td(a0, textNode(x.last_weekdate)) +*
+            td(a0, textNode(show(x.upload_time)))
+          )
+        }        
+	var rows = MvuHTML.concatMap(renderFileRow, model.uploadFiles);	
+
+	var fileTable = {
+          h5(class("card-title"),h0) +*
+            table_(class("table table-bordered"),
+            thead(a0,
+              tr(a0,
+                th(style("width: 10%"), textNode("File name")) +*
+                th(a0, textNode("Earliest week")) +*
+                th(a0, textNode("Latest week")) +*
+                th(a0, textNode("Upload time"))
+               )) +*
+            tbody(a0, rows))
+        };
+        panel("File uploads of COVID-19 data", fileTable)
+      };
+      div(class("container"),
+        h5(class("title"), textNode("Overview")) +* dataInfoPanel +* fileInfoPanel)
+    }
+    renderModel(model)
+  }
+
+#============= UPDT
+
+  sig updt : (Message, Model) ~> Model
+  fun updt(msg, model) client {
+    model
+    # if messages were used, there would be a switch statement for each possible message
+  }
+
+#============= MAIN
+
+  fun mainPage() server {
+    
+    var files = query { for (x <-- csv_file)  
+                  orderby (x.upload_time) [x] };
+
+    runSimple("placeholder", (uploadFiles = files), view, updt);
+    Template.template()
+  }
+
+  fun main() {
+    addRoute("/", fun(_) { mainPage() });
+    addStaticRoute("/css", "css", [("css", "text/css")]);
+    addStaticRoute("/js", "js", [("js", "text/javascript")]);
+    serveWebsockets();
+    servePages()
+  }
+
+main()

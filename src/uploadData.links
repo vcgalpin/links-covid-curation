@@ -1,0 +1,496 @@
+# 20210513: tidied up, documented work-arounds, separated out server functions as much as possible,
+#           improved weeks recording including counts of accepted and rejected updates, and boolean
+#           to indicate when all value are zero, code for updating weeks that are seen again is wrong so omitted
+# 20210520: document how time is used in the various tables
+# 20220817: further code improvements
+
+
+# what's missing
+#   csv file read robustness: currently works for csv files output by LibreOffice
+#   csv file read format: various assumptions about csv file format are hard-coded
+#   subcategory numbers: currently it is assumed that they come in a particular order in csv file
+#   recording of weeks info: works for batch updates, but not so well for individual updates
+
+# to be investigated
+#   load sequence week 14, 30, 44, 53 sometimes files with csv file error on week 53, why?
+#     after reloading the app, week 53 loads OK, doesn't appear to be skipping continue? 
+
+# time information in table
+#   week is a transaction time table, so time-from and time-to are set automatically when transactions occur
+#   csv_file: upload_time, time when the file was uploaded
+#   new data in covid_data: decision_time is insertion time
+#                             valid-from is upload_time in csv_files (valid from the first time instance data was seen)
+#                             valid-to is forever()
+#   accepted change in covid_data: decision_time is time that acceptance was decided by selection of button
+#                                    valid-from is upload_time in csv_files (same reason as above)
+#                                    valid-to is forever()
+#   rejected change in covid_data: decision_time is time that rejection was decided by selection of button
+#                                    valid-from is beginning_of_time() to indicate no period of validity
+#                                    valid-to is beginning_of_time() to indicate no period of validity
+#   decision: time_uploaded is upload_time (name comes from when it was time added to decisions table)
+#           : time_resolved is time that acceptance/rejection was decided by selection of button
+#   decision table records all the possible updates and there outcomes or whether they are still pending,
+#     however it is a table for recording decisions that are pending, and resolved decisions should be deleted
+#
+#   an alternative valid-from time would be to decide a date based on the last_weekdate field in csv_files
+#     since this is when the data comes from, but which date to use is not obviously
+#   a second alternative for valid-from time would be to use the date that the csv file was created but that
+#     would require the user to enter this date which seems an unnecessary overhead
+#   but we will stick to the upload time of the csv_file because that is when the system become aware of the data,
+#     although there are reasonable arguments against this approach
+ 
+
+open import DatabaseTables;
+open import CsvHandling;
+open import Utilities;
+
+open import Mvu;
+open import MvuHTML;
+open import MvuAttrs;
+
+import Template;
+
+typename Decisions = [(subcat: Int,           
+                       weekdate: String,
+                       old_value: Int,
+                       old_file: Int,
+                       new_value: Int,
+                       new_file: Int,
+                       time_uploaded: DateTime,
+                       time_resolved: DateTime,
+                       resolution: String,
+                       res_value: Int)];
+
+typename Model = (file_name: String,
+                  file_id: Int,
+                  fatality_type: String,
+                  results_text: String,
+                  changes: Int,         # number of potential updates
+                  success: Bool,        # new values added?
+                  results_focus: Bool);   # show results
+                  
+        
+typename Message =
+    [| GetFileName:String | GetFatalityType:String | 
+       FileUpload | Cancel | Continue | ContinueSame |
+       AcceptAll | RejectAll | Pending |];
+
+#============= DB FUNS
+
+  fun tableSelect(dc) { # original plan was to upload table of all fatalities as well, hence the switch
+    switch (dc) {       # essentially redundant at this stage
+      case "covid" -> covid_data
+    }
+  }
+
+  fun updateCsvFiles (fn,ut,ffw,lfw) { # now that information is known about file content,
+                                       # it can be added to the csv_files table
+    update (r <-- csv_file)
+      where (r.file_name == fn && r.upload_time == ut)
+      set (first_weekdate = ffw, last_weekdate = lfw)
+  }
+
+  fun getExistingWeeks () {
+    var tbl = ttCurrent(week);
+    for (x <- tbl)[x.weekdate]
+  }
+
+  fun insertNewWeeksandCounts(upload_time,counts,tbl,file_id) { # only to be used for weeks never seen before
+    fun insertWeekCounts (wd,c) {
+      fun insertCounts (wd,c) {
+        switch (c) {
+          case []    -> ()
+          case x::xs -> vt_insert sequenced tbl values 
+                         (subcat,weekdate,count,file_id,decision_time)
+			  [withValidity(
+                           (subcat=stringToInt(second(x)), weekdate=wd, 
+                            count=stringToInt(first(x)),
+                            file_id=file_id,decision_time=now()),
+                           upload_time,forever)];
+			  insertCounts(wd,xs)
+        }
+      }
+      insertCounts(wd,c);
+      fun f (x){stringToInt(first(x))==0}
+
+      var all_counts_zero = and(map(fun(x){stringToInt(first(x))==0},c));
+
+      tt_insert week values 
+        [(weekdate=wd,file_id=file_id, all_zero=all_counts_zero,
+          accepted_updates=0, rejected_updates=0,
+          data_items=length(c))]
+    }
+    switch (counts) {
+      case []    -> ()
+      case x::xs -> insertWeekCounts(first(hd(x)),tl(x)); 
+                      insertNewWeeksandCounts(upload_time,xs,tbl,file_id)
+    }
+  }
+
+
+  fun updateWeeks(time,weeklist,file_id){ # not currently used
+    ignore(for (x <- weeklist)
+      [update (y <-t- week)
+        where (y.weekdate==x)
+        set (file_id = file_id)])
+  }
+
+#============= DB FUNS FOR DECISIONS
+
+  fun addDecisions(counts,diffs,file_id,upload_time) server { # add new differences to decision table 
+    fun insertDecisions (list) {                  
+      switch (list) {
+        case []    -> ()
+        case x::xs -> insert decision values 
+                        (subcat,weekdate,old_value,old_file,new_value,new_file,
+                         time_uploaded,time_resolved,resolution,res_value) [x];
+                      insertDecisions(xs)
+      }
+    }
+    var details = for (x <- counts) for (y <- diffs) 
+      where (y.weekdate==x.weekdate && y.subcat==x.subcat && y.count<>x.count)
+        [(subcat=x.subcat, weekdate=x.weekdate, old_value = y.count, old_file = y.file_id, 
+                             new_value = x.count, new_file=file_id,
+          time_uploaded=upload_time, time_resolved=forever, resolution="none", 
+          res_value = -999) ];
+    insertDecisions(details)    
+  }
+
+  fun aggrDecsByWeek (d,ds,c) {
+    switch (ds) {
+      case []    -> [(weekdate=d,count=c)]
+      case x::xs -> if (x.weekdate==d) { aggrDecsByWeek(d,xs,c+1) } 
+                        else     { (weekdate=d,count=c)::aggrDecsByWeek(x.weekdate,xs,1) }
+    }
+  }
+
+  fun writeUpdate (d) {
+    var when_added = d.time_uploaded;
+    update sequenced (y <-v- covid_data)
+        #between (d.time_uploaded, forever) # this doesn't work, why?
+        between (when_added, forever)
+        where (d.weekdate==y.weekdate && d.subcat==y.subcat)
+        set (count = d.new_value, file_id=d.new_file)
+  }
+
+  fun acceptCorrections (model) server { 
+    var decs = query {for (x <-- decision) where (x.resolution=="none") orderby (x.weekdate) [x]};
+    ignore(for (x <- decs )
+       [writeUpdate(x)]);
+    update (x <-- decision)
+      where (x.resolution=="none")
+      set (time_resolved = now(), resolution="accepted", res_value=x.new_value);
+    ignore(for (x <- aggrDecsByWeek(hd(decs).weekdate,tl(decs),1))
+       [update (y <-t- week)
+         where (x.weekdate==y.weekdate)
+         set (accepted_updates=x.count, rejected_updates=0, file_id=model.file_id)]);
+    (model with changes=0)
+  }
+
+  fun declineCorrections (model) server { 
+    var decs = query {for (x <-- decision) where (x.resolution=="none") orderby (x.weekdate) [x]};
+    ignore(for (x <- decs )
+      [vt_insert sequenced covid_data values 
+        (weekdate,subcat,count,file_id,decision_time)
+	  [withValidity((weekdate=x.weekdate, subcat=x.subcat,
+            count=x.new_value,file_id=model.file_id,decision_time=now()),
+            beginningOfTime,beginningOfTime)]]);
+    update (x <-- decision)
+      where (x.resolution=="none")
+      set (time_resolved = now(), resolution="rejected", res_value=x.old_value);
+    ignore(for (x <- aggrDecsByWeek(hd(decs).weekdate,tl(decs),1))
+       [update (y <-t- week)
+         where (x.weekdate==y.weekdate)
+         set (rejected_updates=x.count, accepted_updates=0, file_id=model.file_id)]);
+    (model with changes=0)
+  }
+
+  fun pendCorrections (model) server { 
+    update (x <-- decision)
+      where (x.resolution=="none")
+      set (resolution="pending");
+    (model with changes=0)
+  }
+
+#============= DB FNS FOR COMPARISON
+
+  fun findCountChanges(counts,file_id,upload_time) { # compare new data with existing data
+
+    var diffs = query nested { for (x <- counts) for (y <- vtCurrent(covid_data)) 
+      where (y.weekdate==x.weekdate && y.subcat==x.subcat && y.count<>x.count)[y] };
+
+    addDecisions(counts,diffs,file_id,upload_time);
+    length(diffs)
+  }
+
+#============= CSV FUNS
+
+  fun loadNewCsv (dc)  { 
+
+    fun readFromCsv () {
+      var l = for (x <- query{asList(rawdata)})
+        [strToList(explode(x.data)++[','],"")];
+        # strToList needs improvement, currently 
+        # works for csv files creating by LibreOffice
+        # delete the contents of "rawdata" once read 
+      delete (x <-- rawdata) where (true);
+      l
+    }
+    fun makeWeek(fs,i) {
+      switch (fs) {
+        case []    -> []
+        case x::xs -> selectElem(x,i)::makeWeek(xs,i)
+      }
+    }
+
+    var l =  readFromCsv();
+    var caption = selectElem(selectElem(l,0),0);
+    # to do: check caption has "matches" for fatality_type
+	
+    # prepare fatality data
+    var m = removeFrom(l,"Footnotes");
+    var t = for (x <- m) where 
+      (selectElem(x,0)<>caption &&
+       selectElem(x,1)<>"Persons " &&
+       selectElem(x,1)<>"Persons" &&
+       selectElem(x,1)<>"Deaths by age group" &&
+       selectElem(x,1)<>"Deaths by NHS Board of usual residence 5" &&
+       selectElem(x,1)<>"Deaths by Council Area of usual residence5" &&
+       selectElem(x,1)<>"Deaths by location6" &&           
+       selectElem(x,0)<>"Total deaths: average of corresponding" &&
+       selectElem(x,0)<>"week over the previous 5 years4" &&
+       allContent(x)<>"") [x];
+    var f = for (x <- t) [mergeFirstAndSecondColumns(x)];
+    var fs = formatDateRow(hd(tl(f))) :: map(formatDataRow,tl(tl(f)));
+
+    var num_weeks = length(hd(fs))-1;
+    var num_cats = length(fs)-1;
+    var rt = for (i <- [0..num_weeks]) [ makeWeek(fs,i) ];
+
+    # this assumes categories are ordered by number 
+    # as given in the cats tables, 
+    # todo: add checking
+
+    var c = "Category number" :: map(intToString,[1..num_cats]);
+
+    c :: tl(rt)
+
+    # the first element of each row is a header
+    # the first row of this structure consists of category numbers
+    # the last row consists of totals
+    # the intermediate rows consists of category data for each week and
+    # the header is the week descriptor        
+  }
+
+#============= DATA FUNS
+
+  fun addCatsToData (l,w) {
+    switch (l) {
+      case []  -> []
+      case x::xs -> zip(x,w)::addCatsToData(xs,w)
+    }
+  }
+
+  fun transformToItems(counts) {
+    for (x <- counts) for (y <- tl(x)) [(weekdate=hd(x).1, subcat=stringToInt(y.2), count=stringToInt(y.1))]
+  }
+
+  fun attemptFileUpload(model) server {
+    if (model.fatality_type<>"covid") {
+      (model with results_text = "Only COVID-19 data can be uploaded currently")
+    } else {
+      # data preparation
+      # var fatalityTable = tableSelect(model.fatality_type); # table handle, hence server
+      var upload_time=now();
+
+    # inserting into csv_files triggers the loading of the csv file
+    # into an SQL table "rawdata" which has a single text field
+    var file_id = insert csv_file values 
+      [(file_name=model.file_name, upload_time=upload_time,
+        first_weekdate="unknown", last_weekdate="unknown")] returning file_id;
+      var ready = loadNewCsv(model.fatality_type);
+      # extract totals
+      var totals = last(ready);
+      # todo: create a table to store file totals by week date for checking purposes    
+
+      # zip each row of week data with list of categories numbers for ease of manipulation
+      var counts = addCatsToData(take(length(ready)-2,tl(ready)),hd(ready));
+      
+      var weeklist = for (x <- map(first,map(hd,counts))) orderby (x) [x]; # order weeks seen
+
+      var last_weekdate = last(weeklist);
+      var first_weekdate = hd(weeklist);
+
+      # record number of items in db
+      var item_count = length(vtCurrent(covid_data));
+      # find out for which weeks there is already data in the db 
+      var extant_weeks = getExistingWeeks();
+ 
+      # split data from csv files into two structures for new weeks and existing weeks
+      var counts_new_weeks = for (x <- counts) where (not(elem(hd(x).1,extant_weeks))) [x];
+      var counts_extant_weeks = for (x <- counts) where (elem(hd(x).1,extant_weeks)) [x];
+      
+      # data decisions: part I
+      # for new weeks, add the new weeks to the weeks table and add the counts to the data table    
+      if (counts_new_weeks <> []) {
+        insertNewWeeksandCounts(upload_time,counts_new_weeks,tableSelect(model.fatality_type),file_id)
+      } else {()};
+
+      # number of items in db after insert of
+      var items_added = length(vtCurrent(covid_data))-item_count; # could use data from weeks instead?
+      var txt_added = "The upload of " ^^ model.fatality_type ^^ " fatality data has been completed. " ^^
+            intToString(items_added) ^^ " data items have been added.";
+      
+      # data decisions: part II
+      # for existing weeks look for any changes and store them in a decision data structure
+
+      if (counts_extant_weeks<>[]) {
+        var new_model = ((model with file_id=file_id) with 
+          changes=findCountChanges(transformToItems(counts_extant_weeks),file_id,upload_time));
+        if (new_model.changes>0) {
+          updateCsvFiles(new_model.file_name,upload_time,first_weekdate,last_weekdate);
+          ((new_model with results_text = txt_added^^" There are "^^intToString(new_model.changes)^^
+            " potential updates.") 
+            with success = true)
+        } else {
+          updateCsvFiles(model.file_name,upload_time,first_weekdate,last_weekdate);
+          ((new_model with results_text = txt_added) with success = true) 
+        }
+      } else {
+        updateCsvFiles(model.file_name,upload_time,first_weekdate,last_weekdate); 
+        ((model with results_text = txt_added) with success = true)
+      }
+    }
+  }
+
+#============= UPDT
+
+  sig updt : (Message, Model) {}~> Model
+  fun updt(msg, model) {
+
+      switch(msg) {
+      case Cancel -> model
+      case GetFileName(fname) -> (model with file_name = fname)
+      case GetFatalityType(dc) -> (model with fatality_type = dc)
+      case FileUpload -> (attemptFileUpload(model) with results_focus=true)
+      case ContinueSame -> (model with results_focus=false)
+      case Continue -> redirect("/dataOverview"); (model with results_focus=false)
+      case AcceptAll -> (acceptCorrections(model) 
+                          with results_text = model.results_text ^^ " " ^^ intToString(model.changes) ^^
+                          " updates have been made.") 
+      case RejectAll -> (declineCorrections(model) 
+                          with results_text = model.results_text ^^ 
+                          " No updates have been made.")
+      case Pending -> (pendCorrections(model) 
+                          with results_text = model.results_text ^^ 
+                          " Update decisions have been added to pending.")
+    }
+  }
+
+#============= VIEW
+
+  sig view : (Model) ~> MvuHTML.HTML(Message)
+  fun view(model) {
+
+
+    var enabledAttr =
+      if (not(model.results_focus)) {
+        a0
+      } else {
+        attr("disabled", "disabled")
+    };
+    fun renderModel(model) {
+      fun panel(name, contents) {
+        div(class("row mt-3"),
+          div(class("col-sm"),
+            div(class("card"),
+              h6(class("card-header"), textNode(name)) +*
+              div(class("card-body"), contents))))
+      }
+      var fileForm = {
+        var typeDropdown = {
+          var typeOptions = [(t="covid",display="COVID-19 fatalities"),(t="all",display="All fatalities")];          
+          fun renderDropdownItem(x) {
+            option(value(x.t), textNode(x.display))
+        }       
+        var options = MvuHTML.concatMap(renderDropdownItem, typeOptions);
+        select_(
+          id("fatalityDropdown") +@
+          class("form-control") +@
+          onChange(fun(x) { GetFatalityType(x) } ), options)
+      };
+      form(a0,
+        div(class("form-group"),
+          label(for_("fatalityDropdown"), textNode("Fatality type")) +*
+          typeDropdown)) +*
+        div(class("form-group"),
+          label(for_("filename"),
+            textNode("Enter full path and name of CSV file for upload")) +*
+            input(type("text") +@
+            class("form-control") +@
+            id("filename") +@
+            value(model.file_name) +@
+            onInput(fun(x) { GetFileName(x) }), h0)) +*
+        div(class("form-group"),
+          button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+            enabledAttr +@ onClick(fun() { FileUpload }), textNode("Upload File")))
+    };
+    var resultsForm= if (model.success && model.changes==0) {
+      form(a0,
+        div(class("form-group"),
+          label(for_("cont"), textNode(model.results_text))) +*
+          button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+            onClick(fun() { Continue }) +@ id("cont"), textNode("Continue"))) 
+      } else if (not(model.success) && model.changes==0) {
+        if (not(model.results_focus)) {
+          form(a0,textNode(model.results_text)) 
+        } else {
+          form(a0,
+          div(class("form-group"),
+            label(for_("cont"), textNode(model.results_text))) +*
+            button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+              onClick(fun() { ContinueSame }) +@ id("cont"), textNode("Continue"))) 
+        }          
+      } else {# mockup of interface
+        form(a0,
+          div(class("form-group"),
+            label(for_("cont1"), textNode(model.results_text))) +*
+            button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+              onClick(fun() { AcceptAll }) +@ id("cont1"), textNode("Accept all updates")) +*
+            button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+              onClick(fun() { RejectAll }) +@ id("cont2"), textNode("Reject all updates")) +* 
+            button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+              # this has not been implemented, selecting this button goes back to overview screen
+              onClick(fun() { Continue }) +@ id("cont3"), textNode("Consider each update individually")) +*
+            button(type("button") +@ class("btn btn-primary mr-2 mt-2") +@
+              onClick(fun() { Pending }) +@ id("cont4"), textNode("Add all updates to pending"))) 
+    };    
+    div(class("container"),
+      h5(class("title"), textNode("Upload")) +* 
+        panel("Upload details",fileForm) +* 
+        panel("Upload results",resultsForm))
+    }
+    renderModel(model)
+  }
+
+#============= MAIN
+
+  fun mainPage() {
+    #var initialModel = (file_name = "/Users/vgalpin1/vgalpin1/current/prov/curation/SCd/covid-deaths-2020-week-14.csv", 
+
+    var initialModel = (file_name = "<replace with full path>/data/covid-deaths-2020-week-14.csv", 
+                        fatality_type = "covid", results_text="Ready for upload to be initiated", success=false, changes=0,
+                        results_focus=false, file_id=0);   
+    runSimple("placeholder", initialModel, view, updt);
+    Template.template()
+  }
+
+  fun main() {
+    addRoute("/", fun(_) { mainPage() });
+    addStaticRoute("/css", "css", [("css", "text/css")]);
+    addStaticRoute("/js", "js", [("js", "text/javascript")]);
+    serveWebsockets();
+    servePages()
+  }
+
+main()

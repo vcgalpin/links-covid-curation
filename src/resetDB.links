@@ -1,0 +1,110 @@
+open import DatabaseTables;
+
+import Mvu;
+import MvuHTML;
+import MvuAttrs;
+import Template;
+
+typename Model = (resetText:String, success: Bool, results_focus: Bool);        
+
+typename Message = [| Reset | Continue |];
+
+# =====
+
+  fun resetTables (model) server {
+    delete (x <-- csv_file) where (true);
+    delete (x <-- decision) where (true);
+    delete nonsequenced (x <-v- covid_data) where (true); 
+    # need to empty weeks via sql trigger since it's a tt table
+    # delete (x <-t- week) where (true);
+    (((model with resetText="Reset completed") with success=true)
+       with results_focus=true)
+  }
+
+# UPDATE ==================================
+  sig updt : (Message, Model) {}~> Model
+  fun updt(msg, model) {
+
+# UPDT BODY ==
+      switch(msg) {
+      case Continue -> redirect("/dataOverview"); model
+      case Reset -> resetTables(model)
+    }
+  }
+
+
+# VIEW ==================================
+  sig view : (Model) ~> MvuHTML.HTML(Message)
+  fun view(model) {
+    open MvuHTML;
+    open MvuAttrs;
+    var h0 = MvuHTML.empty;
+    var a0 = MvuAttrs.empty;
+
+    var enabledAttr =
+      if (not(model.results_focus)) {
+        MvuAttrs.empty
+      } else {
+        MvuAttrs.attr("disabled", "disabled")
+      };
+
+    fun renderModel(model) {
+      
+      fun panel(name, contents) {
+        div(class("row mt-3"),
+          div(class("col-sm"),
+            div(class("card"),
+              h6(class("card-header"), textNode(name)) +*
+              div(class("card-body"), contents))))
+      }
+
+      var resetForm = {           
+        form(a0,
+         div(class("form-group"),
+           label(for_("reset"),
+             textNode("Reset will empty the table that records which CSV files have been uploaded, the table of decision information and the table of fatality counts. Reset will also empty the weeks tables (via an SQL TRIGGER on the deletion from the table of death counts). Reset will not change the table that records category information. "))) +*
+              button(type("button") +@ 
+                class("btn btn-primary mr-2 mt-2") +@
+                enabledAttr +@
+                onClick(fun() { Reset }) +@
+                id("reset"),textNode("Reset")))
+      };
+
+      var resultsForm= if (model.success) {
+        form(a0,
+          div(class("form-group"),
+            label(for_("cont"), textNode(model.resetText))) +*
+            button(type("button") +@ 
+              class("btn btn-primary mr-2 mt-2") +@
+              onClick(fun() { Continue }) +@ 
+              id("cont"), textNode("Continue"))) }
+                       else
+          { form(a0,textNode(model.resetText)) };
+ 
+
+      div(class("container"),
+      h5(class("title"), textNode("Reset")) +* panel("Request reset",
+        resetForm) +* panel("Reset results",resultsForm))
+    }
+    renderModel(model)
+  }
+
+  fun mainPage() {
+
+    var initialModel = (resetText="Ready for reset", success=false,
+                        results_focus=false);   
+
+    Mvu.runSimple("placeholder", initialModel, view, updt);
+
+    Template.template()
+  }
+
+  fun main() {
+    addRoute("/", fun(_) { mainPage() });
+    addStaticRoute("/css", "css", [("css", "text/css")]);
+    addStaticRoute("/js", "js", [("js", "text/javascript")]);
+    serveWebsockets();
+    servePages()
+}
+
+main()

@@ -1,0 +1,65 @@
+var db = database "covid_curation";
+
+var covid_data =
+  table "covid_data"       
+    with (subcat:Int, 
+          weekdate: String, 
+          count:Int, 
+          file_id:Int,
+          decision_time:DateTime)
+    using valid_time(valid_from, valid_to)
+  from db; # VT Table, specifying fields
+
+var csv_file =
+  table "csv_file"
+    with (file_id: Int,
+          file_name: String, 
+          first_weekdate: String,
+          last_weekdate: String,
+          upload_time: DateTime)
+    where file_id readonly
+  from db;
+
+var week =
+  table "week"       
+    with (weekdate : String,
+	  file_id : Int,
+          all_zero : Bool,
+	  accepted_updates : Int,
+	  rejected_updates : Int,
+          data_items : Int)
+    using transaction_time(time_from, time_to)
+  from db; # TT Table, specifying fields 
+
+var decision =
+  table "decision" 
+    with (subcat: Int,
+          weekdate: String,
+          old_value: Int,
+          old_file: Int,
+          new_value: Int,
+          new_file: Int,
+          time_uploaded: DateTime,
+          time_resolved: DateTime,
+          resolution: String,
+          res_value: Int
+     ) from db;
+
+var rawdata =
+  table "rawdata"        
+    with (data : String)
+  from db; 
+
+var subcategory =
+  table "subcategory"
+    with (subcat: Int, 
+          cat: String, 
+          subcat_name: String)
+  from db;
+
+var category =
+  table "category"
+    with (cat: String, 
+          cat_name: String)
+  from db;
+

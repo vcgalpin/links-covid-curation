@@ -1,0 +1,64 @@
+# 20220817: code improvements
+
+# this app does not check that updates are uploaded in the order they 
+# are generated -- using a non-chronological order may lead to errors
+
+# see other files for more detailed comments
+
+import Template;
+
+import DataOverview;
+import UploadData;
+import ResetDB;
+import MakeDecisions;
+import ProvQuery;
+import ProvWeeks;
+import ProvCats;
+import ViewData;
+import AboutInfo;
+
+open import Mvu;
+open import MvuHTML;
+open import MvuAttrs;
+
+fun displayWelcome() {
+
+  fun src(s) { attr("src", s) }
+
+  fun panel(name, contents) {
+    div(class("row mt-3"),
+      div(class("col-sm"),
+        div(class("card"),
+          h6(class("card-header"), textNode(name)) +*
+            div(class("card-body"), contents))))
+  }
+
+  Mvu.runStatic("placeholder", (), fun (_) {
+      div(a0, h3(a0, textNode("Welcome to the curation interface!"))) +*
+      div(a0, h4(a0, unescapedTextNode("This interface supports curation of <a href=\"https://www.nrscotland.gov.uk/statistics-and-data/statistics/statistics-by-theme/vital-events/general-publications/weekly-and-monthly-data-on-births-and-deaths/deaths-involving-coronavirus-covid-19-in-scotland/archive\">National Records of Scotland weekly COVID-19 data.</a>"))) +*
+      panel("",      
+        div(a0,img(src("images/sstotdb.jpg")+@style("width:1200px;"), h0)))
+  });
+  Template.template()
+}
+
+fun main() {
+  addRoute("/", fun(_) { displayWelcome() });
+  addRoute("/dataOverview", fun(_) { DataOverview.mainPage() });
+  addRoute("/uploadData", fun(_) { UploadData.mainPage() });
+  addRoute("/makeDecisions", fun(_) { MakeDecisions.mainPage() });
+  addRoute("/resetDB", fun(_) { ResetDB.mainPage() });
+  addRoute("/provQuery", fun(_) { ProvQuery.mainPage() });
+  addRoute("/provWeeks", fun(_) { ProvWeeks.mainPage() });
+  addRoute("/provCats", fun(_) { ProvCats.mainPage() });
+  addRoute("/viewData", fun(_) { ViewData.mainPage() });
+  addRoute("/aboutInfo", fun(_) { AboutInfo.mainPage() });
+  addRoute("/exampleModule", fun(_) { Template.template() });
+  addStaticRoute("/css", "css", [("css", "text/css")]);
+  addStaticRoute("/js", "js", [("js", "text/javascript")]);
+  addStaticRoute("/images", "images", [("css", "image/png")]);
+  serveWebsockets();
+  servePages()
+}
+
+main()

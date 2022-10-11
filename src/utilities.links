@@ -1,0 +1,54 @@
+  fun strTake (i,s) { # String level version of take
+    implode(take(i,explode(s)))
+  }
+
+  fun strDrop (i,s) { # String level version of drop
+    implode(drop(i,explode(s)))
+  }
+
+  fun strSplit (l,c,r) {
+    switch (explode(l)) {
+      case []    -> (before=r,after="")
+      case x::xs -> if (x==c) {
+                      (before=r,after=implode(xs))
+                    } else {
+                      strSplit(implode(xs),c,r^^implode([x]))
+                    }
+    }
+  }
+
+  fun strLength(s) {
+    length(explode(s))
+  }
+
+  
+  fun formatFloat (f,integer,decimal) {
+    var s = strSplit(floatToString(f),'.',"");
+    var f_before = 
+      if (strLength(s.before)< integer) {
+        implode(replicate(integer,' '))^^s.before^^"." 
+        } else {
+        s.before^^"."
+        };
+    if (strLength(s.after)>=decimal) {
+      f_before^^strTake(decimal,s.after)
+    } else {
+      f_before^^s.after^^implode(replicate(decimal-strLength(s.after),'0'))
+    }
+  }
+
+  fun vtDataAtTime(tbl, time) { # generic function to get data valid at a specified time
+    query {                     # query will be needed after merge of temporal links?
+      for (x <-v- tbl)
+        where (time >= vtFrom(x) && time < vtTo(x))
+        [vtData(x)]
+    }
+  }
+
+  fun vtDataNow(tbl) server { # generic function to get data valid now
+    vtDataAtTime(tbl,now())
+  }
+
+ fun temporalFlatten (x) {
+   (valid_from = vtFrom(x) | (valid_to = vtTo(x) | vtData(x) ))
+ }

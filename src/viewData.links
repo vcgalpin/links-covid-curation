@@ -1,0 +1,201 @@
+# 20220817: further improvements to code
+
+# what's missing
+#   graphical output: initial attempt to use highcharts.js, needs more work
+
+open import DatabaseTables;
+open import Utilities;
+
+open import Mvu;
+open import MvuHTML;
+open import MvuAttrs;
+open import Template;
+
+## FFI Stuff
+module Highcharts {
+  alien javascript "/js/highcharts.js" {
+    dummy : ();
+  }
+}
+module HighchartsWrapper {
+  alien javascript "/js/highchartsWrapper.js" {
+     renderChart : (String, String, String, String, [(String, Int)]) ~> ();
+  }
+}
+##
+
+typename Model = (display_text:String, success: Bool, results_focus: Bool, show_chart: Bool,
+                  display_cat:String, 
+                  cats: [(cat_name:String,cat:String)]);
+        
+typename Message =
+    [| Continue | GetCat:String | ShowData | ShowChart |];
+
+typename Chart = (title: String, xLabel: String, yLabel: String, data: [(String, Int)]);
+
+#============= FUNS
+
+  fun getSubcatsCurrent (c) server {
+    query nested {for (x <-- subcategory) 
+      where (x.cat==c)
+        [(subcat_name=x.subcat_name,cat=x.cat,
+          results= 
+            for (y <- vtCurrent(covid_data)) 
+              for (z <- ttCurrent(week))    
+                where (y.subcat==x.subcat &&
+                       z.all_zero==false && 
+                       z.weekdate==y.weekdate)
+                  orderby (y.weekdate)
+                    [(count=y.count,weekdate=y.weekdate)]
+         )]}
+  }
+ 
+#============= UPDT
+
+  sig updt : (Message, Model) {}~> Model
+  fun updt(msg, model) {
+
+      switch(msg) {
+      case Continue -> (model with success=false)
+      case GetCat(g) -> (model with display_cat=g) 
+      case ShowData -> (model with results_focus=true)
+      case ShowChart -> (model with show_chart=true)
+    }
+  }
+
+#============= VIEW
+
+  sig view : (Model) ~> MvuHTML.HTML(Message)
+  fun view(model) {
+
+    var enabledAttr =
+      if (not(model.results_focus)) {
+        a0
+      } else {
+        attr("disabled", "disabled")
+      };
+
+    fun renderModel(model) {
+      
+      fun panel(name, contents) {
+        div(class("row mt-3"),
+          div(class("col-sm"),
+            div(class("card"),
+              h6(class("card-header"), textNode(name)) +*
+              div(class("card-body"), contents))))
+      }
+
+## =========== Setup of dropdown menus
+
+      var catDropdown = {      
+        fun renderDropdownItem(x) {
+          option(value(x.cat), textNode(x.cat_name))
+        }
+        var options = MvuHTML.concatMap(renderDropdownItem, model.cats);
+	  select_(
+              id("catDropdown") +@
+              class("form-control") +@
+              onChange(fun(x) { GetCat(x) } ), options)
+      };
+
+      var chooseForm = {           
+        form(a0,
+         div(class("form-group"),
+           label(for_("catDropdown"), textNode("Select category")) +*
+              catDropdown))
+      };
+
+fun showChartWidget() {
+    htmlWidget("div",
+        [("id", "chartPlaceholder"),
+         ("style", "width: 500px; height: 400px; margin-top:10px;")]) +*
+    button(onClick(fun() { ShowChart }), textNode("Show chart"))
+}
+
+      fun calcPercentIncr (prev,curr) {
+        if (prev<>0)
+          formatFloat(intToFloat(curr-prev)/.intToFloat(prev)*.100.0,4,1)
+        else
+          "    -"
+      }
+
+      fun calcIncr(prev,rest) {
+        switch (rest) {
+          case []    -> []
+          case x::xs -> calcPercentIncr(prev,x.count):: #strTake(5,calcPercentIncr(prev,x.count))::
+                        calcIncr(x.count,xs)
+        }
+      }
+   
+      fun genTableData (i) {
+        [ i.subcat_name :: map(fun (x){intToString(x.count)},i.results),
+          "% incr" :: "-" :: calcIncr(hd(i.results).count,tl(i.results)) ]
+      }
+
+      fun resultsTable (cat) {       
+        fun renderResHeader (x) {
+          th(a0,textNode(strDrop(8,x.weekdate)^^strDrop(4,strTake(7,x.weekdate))))
+        }   
+        fun renderResRow(x) {
+          fun renderResRowItem (y) {
+            td(style("text-align:right;"),textNode(y))
+          }
+          tr(a0,MvuHTML.concatMap(renderResRowItem, x))
+        }
+
+        var sc = getSubcatsCurrent(cat);
+        var res = for (x <- sc) genTableData(x);
+        # assumptions are made that every category in a group has a value
+        # for every week and these are ordered
+        var rows = MvuHTML.concatMap(renderResRow, res);
+
+        { 
+          h5(class("card-title"),h0) +*
+            table_(class("table table-bordered table-striped"),
+              thead(a0,
+                tr(a0,       
+                  th(a0,textNode("")) +*           
+                  MvuHTML.concatMap(renderResHeader,hd(sc).results)
+               )) +*
+               tbody(a0, rows))
+        }
+
+      }
+
+      var resultsForm= if (model.results_focus) {
+        form(a0,
+          resultsTable(model.display_cat)) }
+                       else
+          { form(a0,textNode(model.display_text)) };
+
+
+      div(class("container"),
+      h5(class("title"), textNode("Covid-19 Data")) +* panel("Choose category",
+        chooseForm) +* panel("Results from the week of 16 March 2020",resultsForm))
+    }
+    renderModel(model)
+  }
+
+#============= MAIN
+
+  fun mainPage() {
+
+    var cg = query {for (x <-- category) [x]};
+    var initialModel = (display_text="Waiting for category selection", success=false,
+                        results_focus=true, show_chart=false,
+                        cats = cg, display_cat="All");   
+
+    Mvu.runSimple("placeholder", initialModel, view, updt);
+
+    Template.template()
+  }
+
+  fun main() {
+    addRoute("/", fun(_) { mainPage() });
+    addStaticRoute("/css", "css", [("css", "text/css")]);
+    addStaticRoute("/js", "js", [("js", "text/javascript")]);
+    serveWebsockets();
+    servePages()
+}
+
+main()
