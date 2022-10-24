@@ -1,4 +1,6 @@
-# Scottish COVID-19 Data Curation Interface [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.7199221.svg)](https://doi.org/10.5281/zenodo.7199221)
+# Scottish COVID-19 Data Curation Interface 
+
+### vcgalpin/links-covid-curation: Initial release [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.7199221.svg)](https://doi.org/10.5281/zenodo.7199221)
 
 This [Links](https://links-lang.org) prototype provides an interface to curate the weekly data available from 
 *[National Records of Scotland](https://www.nrscotland.gov.uk/statistics-and-data/statistics/statistics-by-theme/vital-events/general-publications/weekly-and-monthly-data-on-births-and-deaths/deaths-involving-coronavirus-covid-19-in-scotland/archive)*. 
