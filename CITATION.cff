@@ -4,7 +4,7 @@ authors:
   - family-names: Galpin
     given-names: Vashti
     orcid: https://orcid.org/0000-0001-8914-1122
-title: "Scottish COVID-19 Data Curation Interface"
+title: "vcgalpin/links-covid-curation: Initial release"
 version: 0.1.0
 doi: 10.5281/zenodo.7199220
 date-released: 2022-10-14
