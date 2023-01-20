@@ -28,13 +28,13 @@ the files were originally released, and unexpected behaviour may occur for a dif
 
 The database relation that stores the COVID-19 data is a valid-time table, and the one that stores information about weeks is atransaction-time table. Further details of the use of time is documented in the file [`uploadData.links`](src/uploadData.links). Examples of temporal feature usage can be found in the following files.
 
-* **Sequenced insert:** [`uploadData.links: lines 100-111`](https://github.com/XAZKQV26IL/covid-curation/blob/260f2535e8f0e1dc88c4800393584b89024cd670/src/uploadData.links#L100)
-* **Sequenced update:** [`uploadData.links: lines 167-174`](https://github.com/XAZKQV26IL/covid-curation/blob/260f2535e8f0e1dc88c4800393584b89024cd670/src/uploadData.links#L167)
-* **Current query:** [`viewData.links: lines 83-51`](https://github.com/XAZKQV26IL/covid-curation/blob/260f2535e8f0e1dc88c4800393584b89024cd670/src/viewData.links#L38)
-* **Nested selfjoin:** [`provQuery.links lines 96-108`](https://github.com/XAZKQV26IL/covid-curation/blob/260f2535e8f0e1dc88c4800393584b89024cd670/src/provQuery.links#L96)
-* **Nonsequenced delete:** [`resetDB.links: line 17`](https://github.com/XAZKQV26IL/covid-curation/blob/682e27cc62cb5958e0e4c7abb61a6e0c872587d7/src/resetDB.links#L17)
+* **Sequenced insert:** [`uploadData.links: lines 100-111`](src/uploadData.links#L100)
+* **Sequenced update:** [`uploadData.links: lines 167-174`](src/uploadData.links#L167)
+* **Current query:** [`viewData.links: lines 83-51`](src/viewData.links#L38)
+* **Nested selfjoin:** [`provQuery.links lines 96-108`](src/provQuery.links#L96)
+* **Nonsequenced delete:** [`resetDB.links: line 17`](src/resetDB.links#L17)
 
-![Current schema](https://github.com/XAZKQV26IL/covid-curation/blob/9a95a100f755d615f35a72d9a30c0422bc88194c/src/images/currentschema.png)
+![Current schema](src/images/currentschema.png)
 
 ### User interface
 
@@ -50,4 +50,4 @@ Typically, the database interactions occur when the initial model
 is defined, and when the update function calls the functions it
 needs for modifying the model, leading to a separation of concerns.
 
-![Screenshot](https://github.com/XAZKQV26IL/covid-curation/blob/99ee55569e20d009042b5197523927ec8e7fb6e9/src/images/screenshot1.png)
+![Screenshot](src/images/screenshot1.png)
